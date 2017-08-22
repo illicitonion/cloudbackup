@@ -56,6 +56,10 @@ func main() {
 		fatal("Need to specify --key-file", true)
 	}
 
+	if filepath.IsAbs(*file) {
+		fatal("--file must be a relative file", true)
+	}
+
 	keyBytes, err := ioutil.ReadFile(*keyFile)
 	if err != nil {
 		log.Fatal("Error reading key file: ", err)
