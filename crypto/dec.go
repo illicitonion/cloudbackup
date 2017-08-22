@@ -9,8 +9,10 @@ import (
 )
 
 func Decrypt(aesKey, hmacKey, iv, ciphertext, expectedCiphertextMAC []byte) (plaintext []byte, err error) {
-	if err := verifyMAC(hmacKey, ciphertext, expectedCiphertextMAC); err != nil {
-		return nil, err
+	if hmacKey != nil && expectedCiphertextMAC != nil {
+		if err := verifyMAC(hmacKey, ciphertext, expectedCiphertextMAC); err != nil {
+			return nil, err
+		}
 	}
 
 	block, err := aes.NewCipher(aesKey)

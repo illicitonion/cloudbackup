@@ -3,6 +3,7 @@ package gcs
 import (
 	"context"
 	"io"
+	"os"
 
 	"cloud.google.com/go/storage"
 )
@@ -16,6 +17,9 @@ func (b *ChunkStore) Read(hmac string) ([]byte, error) {
 	object := b.Bucket.Object(hmac)
 	reader, err := object.NewReader(context.Background())
 	if err != nil {
+		if err == storage.ErrObjectNotExist {
+			return nil, os.ErrNotExist
+		}
 		return nil, err
 	}
 	defer reader.Close()

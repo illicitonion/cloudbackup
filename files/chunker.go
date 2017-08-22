@@ -3,30 +3,24 @@ package files
 import (
 	"fmt"
 	"io"
-	"os"
 )
 
-func ReadChunks(file *os.File, chunkSize int) func() (read []byte, hasNext bool, err error) {
-	fi, err := file.Stat()
-	if err != nil {
-		return func() ([]byte, bool, error) { return nil, false, err }
-	}
-
+func ReadChunks(name string, f io.Reader, chunkSize int, fileSize int64) func() (read []byte, hasNext bool, err error) {
 	var alreadyRead int64
 
 	return func() ([]byte, bool, error) {
-		multipleChunksLeft := fi.Size() > alreadyRead+int64(chunkSize)
+		multipleChunksLeft := fileSize > alreadyRead+int64(chunkSize)
 		toAlloc := chunkSize
 		if !multipleChunksLeft {
-			toAlloc = int(fi.Size() - alreadyRead)
+			toAlloc = int(fileSize - alreadyRead)
 		}
 		if toAlloc == 0 {
 			return nil, false, nil
 		}
 		read := make([]byte, toAlloc, chunkSize)
-		n, err := io.ReadFull(file, read)
+		n, err := io.ReadFull(f, read)
 		if n != toAlloc || (err != nil && err != io.EOF) {
-			return nil, false, fmt.Errorf("ReadChunks: could not read %v bytes from %v, read %v got error %v", toAlloc, fi.Name(), n, err)
+			return nil, false, fmt.Errorf("ReadChunks: could not read %v bytes from %v, read %v got error %v", toAlloc, name, n, err)
 		}
 
 		alreadyRead += int64(toAlloc)

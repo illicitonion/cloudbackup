@@ -4,23 +4,23 @@ cloudbackup encrypts files and stores them to cloud storage.
 
 Example usage:
 ```
-cloudbackup encrypt --key-file=/path/to/keys.pem --meta-file=/path/to/metadata/file --chunkspec=gcs:/path/to/gcs/keys.json:bucket-name --file="/path/to/file" --chunk-bytes=2097152
+cloudbackup encrypt --key-file=/path/to/keys.pem --chunkspec=gcs:/path/to/gcs/keys.json:bucket-name --file="/path/to/file" --chunk-bytes=2097152
 ```
 
-This will save the encrypted file in chunks, and save the metadata required for decryption to the metadata file. If `--file` is a directory, it will recursively encrypt and store all files in the directory. Behaviour when encountering symlinks is undefined.
+This will save the encrypted file in chunks, and save the metadata required for decryption to a metadata file which in turn will be encrypted and stored. If `--file` is a directory, it will recursively encrypt and store all files in the directory. Behaviour when encountering symlinks is undefined.
 
 ```
-cloudbackup decrypt --key-file=/path/to/keys.pem --meta-file=/path/to/metadata/file --chunkspec=gcs:/path/to/gcs/key.json:bucket-name --file="/path/to/file"
+cloudbackup decrypt --key-file=/path/to/keys.pem --chunkspec=gcs:/path/to/gcs/key.json:bucket-name --file="/path/to/file"
 ```
 
 ## Arguments
 **--key-file**: A PEM-encoded file containing two keys; one named Encryption which is a 256-bit key used for AES encryption, one named Authentication which is a 256-bit key used for HMAC.
 
-**--meta-file**: A boltdb file containing a bucket named files, where metadata required for decryption is stored (e.g. file-chunk mappings). This file will be created if it does not already exist.
-
 **--chunkspec**: A specification of where to store the encrypted chunks. For Google Cloud Storage, this value should be: gcs:path-to-key:bucket-name - a JSON key file can be obtained as per https://cloud.google.com/storage/docs/authentication#generating-a-private-key
 
 **--file**: The path of the file to encrypt or decrypt. If decrypting, this file will be created (or overwritten) atomically.
+
+**--meta-file**: (Optional). This should not normally be used - by default, this file will be encrypted and stored alongside chunks. Specifying this manually will prevent automatic upload of the metadata file, and lead to you needing to manually merge things. A boltdb file containing a bucket named files, where metadata required for decryption is stored (e.g. file-chunk mappings). This file will be created if it does not already exist.
 
 ### For encryption:
 **--chunk-bytes**: The number of bytes to store in each encrypted chunk. Smaller files (or trailing chunks) will be padded such that all chunks are an identical size. This padding will be stripped on decryption.
@@ -57,3 +57,7 @@ Decrypting:
 ```
 openssl aes-256-cbc -d -in /path/to/chunk -K 0000000000000000000000000000000000000000000000000000000000000000 -iv 00000000000000000000000000000000 | head -c ${bytes}
 ```
+
+## Metadata storage
+
+In the chunk store, a single `meta.Entry` is encrypted and stored as the chunk named `meta` (with constant IV `metametametameta`). This points at the encrypted chunks of a gzip'd boltdb metadata file.

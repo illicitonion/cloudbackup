@@ -39,9 +39,8 @@ type DB struct {
 var root = []byte{'.'}
 
 func (d *DB) Put(path string, entry *Entry) ([]string, error) {
-	buf := bytes.NewBuffer(nil)
-	enc := gob.NewEncoder(buf)
-	if err := enc.Encode(entry); err != nil {
+	buf, err := EncodeEntry(entry)
+	if err != nil {
 		return nil, fmt.Errorf("meta: error encoding entry for path %q: %v", path, err)
 	}
 
@@ -68,23 +67,12 @@ func (d *DB) Put(path string, entry *Entry) ([]string, error) {
 				createdBuckets = append(createdBuckets, bucketPath)
 			}
 		}
-		return bucket.Put([]byte(parts[last]), buf.Bytes())
+		return bucket.Put([]byte(parts[last]), buf)
 	})
 }
 
 func (d *DB) Get(path string) (entries map[string]Entry, err error) {
 	entries = make(map[string]Entry)
-
-	decodeEntry := func(v []byte) (*Entry, error) {
-		buf := bytes.NewBuffer(nil)
-		dec := gob.NewDecoder(buf)
-		buf.Write(v)
-		var e Entry
-		if err := dec.Decode(&e); err != nil {
-			return nil, fmt.Errorf("meta: error decoding entry: %v", err)
-		}
-		return &e, nil
-	}
 
 	err = d.db.View(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(root)
@@ -101,7 +89,7 @@ func (d *DB) Get(path string) (entries map[string]Entry, err error) {
 			}
 			v := bucket.Get(root)
 			if v != nil {
-				entry, err := decodeEntry(v)
+				entry, err := DecodeEntry(v)
 				if err != nil {
 					return err
 				}
@@ -111,7 +99,7 @@ func (d *DB) Get(path string) (entries map[string]Entry, err error) {
 
 		v := bucket.Get([]byte(parts[last]))
 		if v != nil {
-			entry, err := decodeEntry(v)
+			entry, err := DecodeEntry(v)
 			if err != nil {
 				return err
 			}
@@ -145,7 +133,7 @@ func (d *DB) Get(path string) (entries map[string]Entry, err error) {
 			cursor := b.Bucket.Cursor()
 			for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
 				if reflect.DeepEqual(k, root) {
-					entry, err := decodeEntry(v)
+					entry, err := DecodeEntry(v)
 					if err != nil {
 						return err
 					}
@@ -158,7 +146,7 @@ func (d *DB) Get(path string) (entries map[string]Entry, err error) {
 							b.Bucket.Bucket(k),
 						})
 					} else {
-						entry, err := decodeEntry(v)
+						entry, err := DecodeEntry(v)
 						if err != nil {
 							return err
 						}
@@ -182,6 +170,26 @@ func (d *DB) Get(path string) (entries map[string]Entry, err error) {
 
 func (d *DB) Close() {
 	d.db.Close()
+}
+
+func EncodeEntry(entry *Entry) ([]byte, error) {
+	buf := bytes.NewBuffer(nil)
+	enc := gob.NewEncoder(buf)
+	if err := enc.Encode(entry); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func DecodeEntry(v []byte) (*Entry, error) {
+	buf := bytes.NewBuffer(nil)
+	dec := gob.NewDecoder(buf)
+	buf.Write(v)
+	var e Entry
+	if err := dec.Decode(&e); err != nil {
+		return nil, fmt.Errorf("meta: error decoding entry: %v", err)
+	}
+	return &e, nil
 }
 
 type namedBucket struct {

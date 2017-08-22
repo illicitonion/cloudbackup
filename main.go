@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/hmac"
@@ -10,6 +12,7 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -31,6 +34,8 @@ import (
 
 const keySize = 32
 
+var metaIV = []byte("metametametameta")
+
 func main() {
 	keyFile := flag.String("key-file", "", "PEM-encoded file containing Encryption, Authentication, and IV keys")
 
@@ -44,12 +49,12 @@ func main() {
 	}
 	os.Args = append([]string{os.Args[0] + " " + os.Args[1]}, os.Args[2:]...)
 
-	var metaFile, chunkSpec, file, excludeNamesFlag *string
+	var metaFileFlag, chunkSpec, file, excludeNamesFlag *string
 	var chunkBytes *int
 	if command != "keygen" {
-		metaFile = flag.String("meta-file", "", "boltdb file for metadata")
 		chunkSpec = flag.String("chunkspec", "", "Spec of where to save chunks. Valid values: local:/path/to/local/directory, gcs:path-to-json-keyfile:bucket-name")
 		file = flag.String("file", "", "File or directory to encrypt/decrypt; -file=. will encrypt the whole current working directory (recursively), or decrypt all known files.")
+		metaFileFlag = flag.String("meta-file", "", "(Optional). This should not normally be used - by default, this file will be encrypted and stored alongside chunks. Specifying this manually will prevent automatic upload of the metadata file, and lead to you needing to manually merge things. A boltdb file containing a bucket named files, where metadata required for decryption is stored (e.g. file-chunk mappings). This file will be created if it does not already exist.")
 
 		if command == "encrypt" {
 			chunkBytes = flag.Int("chunk-bytes", -1, "Number of bytes of plaintext per encrypted chunk")
@@ -89,12 +94,22 @@ func main() {
 		log.Fatal("Error parsing chunk spec: ", err)
 	}
 
-	if *metaFile == "" {
-		log.Fatal("Must set --meta-file")
-	}
-	db, err := meta.NewDB(*metaFile)
+	tempDir, err := ioutil.TempDir("", "cloudbackuptmp")
 	if err != nil {
-		log.Fatalf("Error opening database at %v: %v", *metaFile, err)
+		log.Fatal("Unable to make temporary directory: ", err)
+	}
+
+	var metaFile string
+
+	if *metaFileFlag == "" {
+		metaFile = fetchMetadataFile(aesKey, hmacKey, chunkStore, tempDir)
+	} else {
+		metaFile = *metaFileFlag
+	}
+
+	db, err := meta.NewDB(metaFile)
+	if err != nil {
+		log.Fatalf("Error opening database at %v: %v", metaFile, err)
 	}
 	defer db.Close()
 
@@ -136,14 +151,15 @@ func main() {
 		} else {
 			fn(*file, fi, nil)
 		}
+
+		if *metaFileFlag == "" {
+			db.Close()
+			uploadMetadataFile(aesKey, hmacKey, ivKey, chunkStore, metaFile, *chunkBytes)
+		}
 	case "decrypt":
 		entries, err := db.Get(*file)
 		if err != nil {
 			log.Fatalf("Error getting entries: %v", err)
-		}
-		tempDir, err := ioutil.TempDir("", "cloudbackuptmp")
-		if err != nil {
-			log.Fatal("Unable to make temporary directory: ", err)
 		}
 		paths := make([]string, 0, len(entries))
 		for path, _ := range entries {
@@ -229,6 +245,81 @@ func parseChunkSpec(chunkSpec string, keys map[string][]byte) (chunkStoreInterfa
 	}
 }
 
+func fetchMetadataFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, tempDir string) string {
+	path := filepath.Join(tempDir, "metadb")
+
+	metaPointerCiphertext, err := chunkStore.Read("meta")
+	if err != nil && (err == os.ErrNotExist || strings.Contains(err.Error(), "no such file")) {
+		return path
+	}
+	if err != nil {
+		log.Fatalf("Error reading meta file from chunk storage: %v", err)
+	}
+	metaPointerPlaintext, err := crypto.Decrypt(aesKey, nil, metaIV, metaPointerCiphertext, nil)
+	if err != nil {
+		log.Fatalf("Error decrypting meta file: %v", err)
+	}
+	entry, err := meta.DecodeEntry(metaPointerPlaintext)
+	if err != nil {
+		log.Fatalf("Error decoding meta file: %v", err)
+	}
+	buf := bytes.NewBuffer(nil)
+	decryptChunks(aesKey, hmacKey, buf, chunkStore, entry)
+	unzipped, err := gzip.NewReader(buf)
+	if err != nil {
+		log.Fatalf("Error making gzip reader: %v", err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		log.Fatalf("Error creating metadb file: %v", err)
+	}
+	if err := f.Chmod(0600); err != nil {
+		log.Fatalf("Error chmoding metadb file: %v", err)
+	}
+	if _, err := io.Copy(f, unzipped); err != nil {
+		log.Fatalf("Error writing metadb file: %v", err)
+	}
+	if err := unzipped.Close(); err != nil {
+		log.Fatalf("Error closing gzip decoder: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		log.Fatalf("Error closing metadb file: %v", err)
+	}
+	return path
+}
+
+func uploadMetadataFile(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInterface, metaFile string, chunkBytes int) {
+	dbFile, err := ioutil.ReadFile(metaFile)
+	if err != nil {
+		log.Fatalf("Error reading boltdb file: %v", err)
+	}
+	zipped := bytes.NewBuffer(nil)
+	zipper := gzip.NewWriter(zipped)
+	if _, err := zipper.Write(dbFile); err != nil {
+		log.Fatalf("Error gzipping boltdb file: %v", err)
+	}
+	if err := zipper.Close(); err != nil {
+		log.Fatalf("Error gzipping boltdb file: %v", err)
+	}
+	zippedBytes := int64(zipped.Len())
+	chunks := encryptFile(aesKey, hmacKey, ivKey, chunkStore, chunkBytes, "boltdbmeta", zipped, zippedBytes)
+	entry := meta.Entry{
+		zippedBytes,
+		chunks,
+		0600,
+		"",
+		"",
+	}
+	encoded, err := meta.EncodeEntry(&entry)
+	if err != nil {
+		log.Fatalf("Error encoding entry: %v", err)
+	}
+	ciphertext, _, err := crypto.Encrypt(aesKey, hmacKey, metaIV, encoded, chunkBytes)
+	if err := chunkStore.Save("meta", ciphertext); err != nil {
+		log.Fatalf("Error uploading meta file: %v", err)
+	}
+}
+
 func encryptFileAndStoreMetadata(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInterface, chunkBytes int, db *meta.DB, file string, fi os.FileInfo) {
 	f, err := os.Open(file)
 	if err != nil {
@@ -236,7 +327,7 @@ func encryptFileAndStoreMetadata(aesKey, hmacKey, ivKey []byte, chunkStore chunk
 	}
 	defer f.Close()
 
-	chunks := encryptFile(aesKey, hmacKey, ivKey, chunkStore, chunkBytes, f)
+	chunks := encryptFile(aesKey, hmacKey, ivKey, chunkStore, chunkBytes, fi.Name(), f, fi.Size())
 
 	entry, err := makeEntry(fi, chunks)
 	if err != nil {
@@ -286,8 +377,8 @@ func makeEntry(fi os.FileInfo, chunks []meta.Chunk) (*meta.Entry, error) {
 	}, nil
 }
 
-func encryptFile(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInterface, chunkBytes int, f *os.File) []meta.Chunk {
-	nextChunk := files.ReadChunks(f, chunkBytes)
+func encryptFile(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInterface, chunkBytes int, name string, f io.Reader, fileSize int64) []meta.Chunk {
+	nextChunk := files.ReadChunks(name, f, chunkBytes, fileSize)
 
 	var chunks []meta.Chunk
 
@@ -318,32 +409,16 @@ func encryptFile(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInterface, 
 }
 
 func decryptFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, e *meta.Entry, tempDir, file string) {
-	var accumulatedLength int64
-
 	outFile, err := ioutil.TempFile(tempDir, filepath.Base(file))
 	defer outFile.Close()
 	if err != nil {
 		log.Fatal("Error making temporary file for writing: ", err)
 	}
 
-	for _, chunk := range e.Chunks {
-		ciphertext, err := chunkStore.Read(hex.EncodeToString(chunk.CiphertextMAC))
-		if err != nil {
-			log.Fatal("Error reading encrypted chunk: ", err)
-		}
-
-		plaintextChunk, err := crypto.Decrypt(aesKey, hmacKey, chunk.IV, ciphertext, chunk.CiphertextMAC)
-		if err != nil {
-			log.Fatalf("Decrypting chunk %s (length: %v) with IV %s got error %v", chunk.CiphertextMAC, len(ciphertext), chunk.IV, err)
-		}
-		if accumulatedLength+int64(len(plaintextChunk)) > e.Bytes {
-			plaintextChunk = plaintextChunk[:int(e.Bytes-accumulatedLength)]
-		}
-		accumulatedLength += int64(len(plaintextChunk))
-		if _, err := outFile.Write(plaintextChunk); err != nil {
-			log.Fatal("Error writing decrypted file: ", err)
-		}
+	if err := decryptChunks(aesKey, hmacKey, outFile, chunkStore, e); err != nil {
+		log.Fatal(err)
 	}
+
 	if err := os.Chmod(outFile.Name(), e.Mode); err != nil {
 		log.Fatalf("Error chmoding file %v to %v: %v", outFile.Name(), strconv.FormatUint(uint64(e.Mode), 8), err)
 	}
@@ -351,6 +426,30 @@ func decryptFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, e *meta
 	if err := os.Rename(outFile.Name(), file); err != nil {
 		log.Fatalf("Error renaming temporary file %v to output file %v: %v", outFile.Name(), file, err)
 	}
+}
+
+func decryptChunks(aesKey, hmacKey []byte, dst io.Writer, chunkStore chunkStoreInterface, e *meta.Entry) error {
+	var accumulatedLength int64
+
+	for _, chunk := range e.Chunks {
+		ciphertext, err := chunkStore.Read(hex.EncodeToString(chunk.CiphertextMAC))
+		if err != nil {
+			return fmt.Errorf("error reading encrypted chunk: %v", err)
+		}
+
+		plaintextChunk, err := crypto.Decrypt(aesKey, hmacKey, chunk.IV, ciphertext, chunk.CiphertextMAC)
+		if err != nil {
+			return fmt.Errorf("decrypting chunk %s (length: %v) with IV %s got error %v", chunk.CiphertextMAC, len(ciphertext), chunk.IV, err)
+		}
+		if accumulatedLength+int64(len(plaintextChunk)) > e.Bytes {
+			plaintextChunk = plaintextChunk[:int(e.Bytes-accumulatedLength)]
+		}
+		accumulatedLength += int64(len(plaintextChunk))
+		if _, err := dst.Write(plaintextChunk); err != nil {
+			return fmt.Errorf("error writing decrypted file: %v", err)
+		}
+	}
+	return nil
 }
 
 func chown(nameForErrors, path string, e *meta.Entry) {

@@ -10,7 +10,7 @@ import (
 var abc = []byte("abc")
 
 func TestReadLessThanOneChunk(t *testing.T) {
-	next := ReadChunks(writeFile(t), 10)
+	next := readChunks(t, 10)
 	read, hasNext, err := next()
 	if err != nil {
 		t.Errorf("err: want nil, got %v", err)
@@ -35,7 +35,7 @@ func TestReadLessThanOneChunk(t *testing.T) {
 }
 
 func TestReadOneChunk(t *testing.T) {
-	next := ReadChunks(writeFile(t), 3)
+	next := readChunks(t, 3)
 	read, hasNext, err := next()
 	if err != nil {
 		t.Errorf("err: want nil, got %v", err)
@@ -60,7 +60,7 @@ func TestReadOneChunk(t *testing.T) {
 }
 
 func TestReadTwoChunks(t *testing.T) {
-	next := ReadChunks(writeFile(t), 2)
+	next := readChunks(t, 2)
 	read, hasNext, err := next()
 	if err != nil {
 		t.Errorf("err: want nil, got %v", err)
@@ -96,7 +96,7 @@ func TestReadTwoChunks(t *testing.T) {
 }
 
 func TestReadThreeChunks(t *testing.T) {
-	next := ReadChunks(writeFile(t), 1)
+	next := readChunks(t, 1)
 	read, hasNext, err := next()
 	if err != nil {
 		t.Errorf("err: want nil, got %v", err)
@@ -140,6 +140,10 @@ func TestReadThreeChunks(t *testing.T) {
 	if hasNext4 {
 		t.Errorf("hasNext4: want false got true")
 	}
+}
+
+func readChunks(t *testing.T, chunkBytes int) func() (read []byte, hasNext bool, err error) {
+	return ReadChunks("", writeFile(t), chunkBytes, int64(len(abc)))
 }
 
 func writeFile(t *testing.T) *os.File {
