@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -27,33 +29,43 @@ import (
 	"github.com/illicitonion/cloudbackup/meta"
 )
 
-func main() {
-	metaFile := flag.String("meta-file", "", "boltdb file for metadata")
-	keyFile := flag.String("key-file", "", "PEM-encoded file containing Encryption, Authentication, and IV keys")
-	chunkSpec := flag.String("chunkspec", "", "Spec of where to save chunks. Valid values: local:/path/to/local/directory, gcs:path-to-json-keyfile:bucket-name")
-	file := flag.String("file", "", "File or directory to encrypt/decrypt; -file=. will encrypt the whole current working directory (recursively), or decrypt all known files.")
+const keySize = 32
 
-	// encrypt
-	chunkBytes := flag.Int("chunk-bytes", -1, "Number of bytes of plaintext per encrypted chunk (for encrypt command only)")
-	excludeNamesFlag := flag.String("exclude-names", "", "File or directory names to ignore; semicolon-delimited (for encrypt command only)")
+func main() {
+	keyFile := flag.String("key-file", "", "PEM-encoded file containing Encryption, Authentication, and IV keys")
 
 	var command string
 	if len(os.Args) < 2 || os.Args[1][0] == '-' {
-		log.Fatalf("Need to specify subcommand. Usage: %s [encrypt|decrypt]", os.Args[0])
+		log.Fatalf("Need to specify subcommand. Usage: %s [encrypt|decrypt|keygen]", os.Args[0])
 	}
 	command = os.Args[1]
-	if command != "encrypt" && command != "decrypt" {
-		log.Fatal("Subcommand must be one of encrypt or decrypt, got ", command)
+	if command != "encrypt" && command != "decrypt" && command != "keygen" {
+		log.Fatal("Subcommand must be one of encrypt, decrypt, or keygen, got ", command)
 	}
 	os.Args = append([]string{os.Args[0] + " " + os.Args[1]}, os.Args[2:]...)
-	flag.Parse()
 
-	if filepath.IsAbs(*file) {
-		fatal("--file must be a relative file", true)
+	var metaFile, chunkSpec, file, excludeNamesFlag *string
+	var chunkBytes *int
+	if command != "keygen" {
+		metaFile = flag.String("meta-file", "", "boltdb file for metadata")
+		chunkSpec = flag.String("chunkspec", "", "Spec of where to save chunks. Valid values: local:/path/to/local/directory, gcs:path-to-json-keyfile:bucket-name")
+		file = flag.String("file", "", "File or directory to encrypt/decrypt; -file=. will encrypt the whole current working directory (recursively), or decrypt all known files.")
+
+		if command == "encrypt" {
+			chunkBytes = flag.Int("chunk-bytes", -1, "Number of bytes of plaintext per encrypted chunk")
+			excludeNamesFlag = flag.String("exclude-names", "", "File or directory names to ignore; semicolon-delimited")
+		}
 	}
+
+	flag.Parse()
 
 	if *keyFile == "" {
 		fatal("Need to specify --key-file", true)
+	}
+
+	if command == "keygen" {
+		generateKeys(*keyFile)
+		return
 	}
 
 	if filepath.IsAbs(*file) {
@@ -68,7 +80,7 @@ func main() {
 	aesKey := keys["Encryption"]
 	hmacKey := keys["Authentication"]
 	ivKey := keys["IV"]
-	if len(aesKey) != 32 || len(hmacKey) != 32 || len(ivKey) != 32 {
+	if len(aesKey) != keySize || len(hmacKey) != keySize || len(ivKey) != keySize {
 		fatal("Bad keys: Want each to be 256 bits", false)
 	}
 
@@ -161,6 +173,24 @@ func fatal(message string, includeUsage bool) {
 		flag.PrintDefaults()
 	}
 	os.Exit(2)
+}
+
+func generateKeys(path string) {
+	toWrite := make([]byte, 0, 300)
+	keyBuf := make([]byte, keySize)
+	for _, t := range []string{"Authentication", "Encryption", "IV"} {
+		_, err := rand.Read(keyBuf)
+		if err != nil {
+			log.Fatalf("Error generating random keys: %v", err)
+		}
+		toWrite = append(toWrite, pem.EncodeToMemory(&pem.Block{
+			Type:  t,
+			Bytes: keyBuf,
+		})...)
+	}
+	if err := ioutil.WriteFile(path, toWrite, 0600); err != nil {
+		log.Fatalf("Error writing keyfile: %v", err)
+	}
 }
 
 func parseChunkSpec(chunkSpec string, keys map[string][]byte) (chunkStoreInterface, error) {
