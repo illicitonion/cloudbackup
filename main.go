@@ -53,12 +53,12 @@ func main() {
 	var chunkBytes *int
 	if command != "keygen" {
 		chunkSpec = flag.String("chunkspec", "", "Spec of where to save chunks. Valid values: local:/path/to/local/directory, gcs:path-to-json-keyfile:bucket-name")
-		file = flag.String("file", "", "File or directory to encrypt/decrypt; -file=. will encrypt the whole current working directory (recursively), or decrypt all known files.")
+		file = flag.String("file", "", "Relative path of the file or directory to encrypt or decrypt. If decrypting, this file will be created (or overwritten) atomically. --file=. will encrypt the whole current working directory (recursively), or decrypt all known files.")
 		metaFileFlag = flag.String("meta-file", "", "(Optional). This should not normally be used - by default, this file will be encrypted and stored alongside chunks. Specifying this manually will prevent automatic upload of the metadata file, and lead to you needing to manually merge things. A boltdb file containing a bucket named files, where metadata required for decryption is stored (e.g. file-chunk mappings). This file will be created if it does not already exist.")
 
 		if command == "encrypt" {
-			chunkBytes = flag.Int("chunk-bytes", -1, "Number of bytes of plaintext per encrypted chunk")
-			excludeNamesFlag = flag.String("exclude-names", "", "File or directory names to ignore; semicolon-delimited")
+			chunkBytes = flag.Int("chunk-bytes", -1, "The number of bytes to store in each encrypted chunk. Smaller files (or trailing chunks) will be padded such that all chunks are an identical size. This padding will be stripped on decryption. This must be at least as large as a single meta.Entry (which is about 256 bytes).")
+			excludeNamesFlag = flag.String("exclude-names", "", "File or directory names to ignore; semicolon-delimited.")
 		}
 	}
 
