@@ -37,12 +37,14 @@ Each chunk is stored in cloud storage, named with the HMAC-SHA256 of the ciphert
 
 An entry is added to a metadata file which contains a mapping of:
 
+```
 filename -> {
-  Size of file in bytes (for removing padding)
-  Mode of file (to set permissions on decryption)
-  Owning username and group name of file (to chown on decryption)
-  List of Ciphertext HMACs for each chunk (to find them), and their IVs (to decrypt them)
+ Size of file in bytes (for removing padding)
+ Mode of file (to set permissions on decryption)
+ Owning username and group name of file (to chown on decryption)
+ List of Ciphertext HMACs for each chunk (to find them), and their IVs (to decrypt them)
 }
+```
 
 encoded in the Go "gob" format (https://golang.org/pkg/encoding/gob/).
 
