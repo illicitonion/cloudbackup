@@ -27,6 +27,29 @@ cloudbackup decrypt --key-file=/path/to/keys.pem --chunkspec=gcs:/path/to/gcs/ke
 
 **--exclude-names**: File or directory names to ignore; semicolon-delimited
 
+## What it does
+
+A file is split into plaintext chunks of equal size. The last chunk is padded with null bytes if it is smaller than a whole chunk.
+
+Each chunk is encrypted with AES-256 using the Encryption key, using CBC across blocks within a chunk. The IV used is an HMAC-SHA256 of the plaintext chunk using the IV key (distinct from the Encryption key).
+
+Each chunk is stored in cloud storage, named with the HMAC-SHA256 of the ciphertext chunk using the Authentication key (distinct from both the Encryption and IV keys).
+
+An entry is added to a metadata file which contains a mapping of:
+
+filename -> {
+  Size of file in bytes (for removing padding)
+  Mode of file (to set permissions on decryption)
+  Owning username and group name of file (to chown on decryption)
+  List of Ciphertext HMACs for each chunk (to find them), and their IVs (to decrypt them)
+}
+
+encoded in the Go "gob" format (https://golang.org/pkg/encoding/gob/).
+
+This metadata file is gzip'd and encrypted with the Encryption key just as any other file would be.
+
+A file called "meta" is created which contains the metadata-file value for the metadata file (i.e. its size/mode/... tuple). This value is encrypted with AES-256 with the Encryption key, with constant IV "metametametameta", and the ciphertext is uploaded to cloud storage. This allows the metadata file to be found and fetched.
+
 ## Weaknesses
 
 ### Keys
@@ -37,7 +60,7 @@ If someone manages to obtain or decrypt your metadata file, they get a whole lot
  * Filenames of every backed up file.
  * Sizes of every backed up file.
  * Pointers to the encrypted chunks to try to decrypt for any particular file.
- * HMAC with SHA256 of the plaintext of each chunk (used as the IV - you could choose to use another IV scheme, like random bytes, or a hash of the filename, or something - each of these offers different trade-offs). The HMAC uses a key, so this shouldn't give too much information to an attacker, but if HMAC-SHA256 is broken in some way, it could be a problem.
+ * HMAC-SHA256 of the plaintext of each chunk (used as the IV - you could choose to use another IV scheme, like random bytes, or a hash of the filename, or something - each of these offers different trade-offs). The HMAC uses a key, so this shouldn't give too much information to an attacker, but if HMAC-SHA256 is broken in some way, it could be a problem.
 
 ### Algorithms
  * AES (if this is broken, all your data are compromised).
