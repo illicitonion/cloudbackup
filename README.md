@@ -31,9 +31,9 @@ cloudbackup decrypt --key-file=/path/to/keys.pem --chunkspec=gcs:/path/to/gcs/ke
 
 A file is split into plaintext chunks of equal size. The last chunk is padded with null bytes if it is smaller than a whole chunk.
 
-Each chunk is encrypted with AES-256 using the Encryption key, using CBC across blocks within a chunk. The IV used is an HMAC-SHA256 of the plaintext chunk using the IV key (distinct from the Encryption key).
+Each chunk is encrypted with AES-256 using the Encryption key, using CBC across blocks within a chunk. The IV used is random.
 
-Each chunk is stored in cloud storage, named with the HMAC-SHA256 of the ciphertext chunk using the Authentication key (distinct from both the Encryption and IV keys).
+Each chunk is stored in cloud storage, named with the HMAC-SHA256 of the ciphertext chunk using the Authentication key (distinct from both the Encryption key).
 
 An entry is added to a metadata file which contains a mapping of:
 
@@ -62,11 +62,10 @@ If someone manages to obtain or decrypt your metadata file, they get a whole lot
  * Filenames of every backed up file.
  * Sizes of every backed up file.
  * Pointers to the encrypted chunks to try to decrypt for any particular file.
- * HMAC-SHA256 of the plaintext of each chunk (used as the IV - you could choose to use another IV scheme, like random bytes, or a hash of the filename, or something - each of these offers different trade-offs). The HMAC uses a key, so this shouldn't give too much information to an attacker, but if HMAC-SHA256 is broken in some way, it could be a problem.
 
 ### Algorithms
- * AES (if this is broken, all your data are compromised).
- * HMAC-SHA256 (see Metadata file section).
+ * AES (if this is broken, all your data are compromised) in CBC mode.
+ * HMAC-SHA256 (used to authenticate that ciphertexts have not been tampered with).
 
 ### Traffic analysis
 This software uploads and downloads chunks sequentially. Anyone who can watch your traffic (or server storage timestamps) can gain some information about your stored data (e.g. "This file is probably the metadata file" or "These five chunks seem to be ordered this way probably in one file"). No attempts are made to cover up timings (e.g. disk seeks switching between files). Some randomisation/delay/similar could be added if someone cared much. Harder, is hiding higher level patterns like "700MB seems to be uploaded every week when Dr Who is being broadcast", short of uploading random chunks.
