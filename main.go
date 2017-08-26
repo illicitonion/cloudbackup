@@ -5,9 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/aes"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/pem"
 	"flag"
@@ -84,8 +82,7 @@ func main() {
 	keys := crypto.ReadKeys(keyBytes)
 	aesKey := keys["Encryption"]
 	hmacKey := keys["Authentication"]
-	ivKey := keys["IV"]
-	if len(aesKey) != keySize || len(hmacKey) != keySize || len(ivKey) != keySize {
+	if len(aesKey) != keySize || len(hmacKey) != keySize {
 		fatal("Bad keys: Want each to be 256 bits", false)
 	}
 
@@ -140,7 +137,7 @@ func main() {
 				}
 			}
 			if !fi.IsDir() {
-				encryptFileAndStoreMetadata(aesKey, hmacKey, ivKey, chunkStore, *chunkBytes, db, file, fi)
+				encryptFileAndStoreMetadata(aesKey, hmacKey, chunkStore, *chunkBytes, db, file, fi)
 			}
 			return nil
 		}
@@ -154,7 +151,7 @@ func main() {
 
 		if *metaFileFlag == "" {
 			db.Close()
-			uploadMetadataFile(aesKey, hmacKey, ivKey, chunkStore, metaFile, *chunkBytes)
+			uploadMetadataFile(aesKey, hmacKey, chunkStore, metaFile, *chunkBytes)
 		}
 	case "decrypt":
 		entries, err := db.Get(*file)
@@ -194,7 +191,7 @@ func fatal(message string, includeUsage bool) {
 func generateKeys(path string) {
 	toWrite := make([]byte, 0, 300)
 	keyBuf := make([]byte, keySize)
-	for _, t := range []string{"Authentication", "Encryption", "IV"} {
+	for _, t := range []string{"Authentication", "Encryption"} {
 		_, err := rand.Read(keyBuf)
 		if err != nil {
 			log.Fatalf("Error generating random keys: %v", err)
@@ -288,7 +285,7 @@ func fetchMetadataFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, t
 	return path
 }
 
-func uploadMetadataFile(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInterface, metaFile string, chunkBytes int) {
+func uploadMetadataFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, metaFile string, chunkBytes int) {
 	dbFile, err := ioutil.ReadFile(metaFile)
 	if err != nil {
 		log.Fatalf("Error reading boltdb file: %v", err)
@@ -302,7 +299,7 @@ func uploadMetadataFile(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInte
 		log.Fatalf("Error gzipping boltdb file: %v", err)
 	}
 	zippedBytes := int64(zipped.Len())
-	chunks := encryptFile(aesKey, hmacKey, ivKey, chunkStore, chunkBytes, "boltdbmeta", zipped, zippedBytes)
+	chunks := encryptFile(aesKey, hmacKey, chunkStore, chunkBytes, "boltdbmeta", zipped, zippedBytes)
 	entry := meta.Entry{
 		zippedBytes,
 		chunks,
@@ -320,14 +317,14 @@ func uploadMetadataFile(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInte
 	}
 }
 
-func encryptFileAndStoreMetadata(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInterface, chunkBytes int, db *meta.DB, file string, fi os.FileInfo) {
+func encryptFileAndStoreMetadata(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, chunkBytes int, db *meta.DB, file string, fi os.FileInfo) {
 	f, err := os.Open(file)
 	if err != nil {
 		log.Fatal("Error opening file for encryption: ", err)
 	}
 	defer f.Close()
 
-	chunks := encryptFile(aesKey, hmacKey, ivKey, chunkStore, chunkBytes, fi.Name(), f, fi.Size())
+	chunks := encryptFile(aesKey, hmacKey, chunkStore, chunkBytes, fi.Name(), f, fi.Size())
 
 	entry, err := makeEntry(fi, chunks)
 	if err != nil {
@@ -377,7 +374,7 @@ func makeEntry(fi os.FileInfo, chunks []meta.Chunk) (*meta.Entry, error) {
 	}, nil
 }
 
-func encryptFile(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInterface, chunkBytes int, name string, f io.Reader, fileSize int64) []meta.Chunk {
+func encryptFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, chunkBytes int, name string, f io.Reader, fileSize int64) []meta.Chunk {
 	nextChunk := files.ReadChunks(name, f, chunkBytes, fileSize)
 
 	var chunks []meta.Chunk
@@ -391,7 +388,10 @@ func encryptFile(aesKey, hmacKey, ivKey []byte, chunkStore chunkStoreInterface, 
 			break
 		}
 
-		iv := hmac.New(sha256.New, ivKey).Sum(plaintext)[:aes.BlockSize]
+		iv := make([]byte, aes.BlockSize)
+		if _, err := rand.Read(iv); err != nil {
+			log.Fatal("Error reading random value for IV:", err)
+		}
 
 		ciphertext, ciphertextMAC, err := crypto.Encrypt(aesKey, hmacKey, iv, plaintext, chunkBytes)
 		if err != nil {
