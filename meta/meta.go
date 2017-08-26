@@ -62,7 +62,7 @@ func (d *DB) Put(path string, entry *Entry) ([]string, error) {
 				bucket, err = bucket.CreateBucket([]byte(part))
 				bucketPath := strings.Join(parts[:i+1], "/")
 				if err != nil {
-					return fmt.Errorf("meta: creating/getting bucket %v: %v", bucketPath)
+					return fmt.Errorf("meta: creating/getting bucket %v: %v", bucketPath, err)
 				}
 				createdBuckets = append(createdBuckets, bucketPath)
 			}

@@ -182,7 +182,7 @@ func testPut(t *testing.T, before func(*DB, *testing.T), after func(*DB, *testin
 	})
 
 	if !reflect.DeepEqual(wantNewBuckets, gotNewBuckets) {
-		t.Error("want newBuckets %v, got %v", wantNewBuckets, gotNewBuckets)
+		t.Errorf("want newBuckets %v, got %v", wantNewBuckets, gotNewBuckets)
 	}
 
 	after(db, t)

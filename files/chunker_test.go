@@ -27,7 +27,7 @@ func TestReadLessThanOneChunk(t *testing.T) {
 		t.Errorf("err2: want nil, got %v", err2)
 	}
 	if read2 != nil {
-		t.Errorf("read2: want % X got % X", nil, read2)
+		t.Errorf("read2: want nil got % X", read2)
 	}
 	if hasNext2 {
 		t.Errorf("hasNext2: want false got true")
@@ -52,7 +52,7 @@ func TestReadOneChunk(t *testing.T) {
 		t.Errorf("err2: want nil, got %v", err2)
 	}
 	if read2 != nil {
-		t.Errorf("read2: want % X got % X", nil, read2)
+		t.Errorf("read2: want nil got % X", read2)
 	}
 	if hasNext2 {
 		t.Errorf("hasNext2: want false got true")
@@ -88,7 +88,7 @@ func TestReadTwoChunks(t *testing.T) {
 		t.Errorf("err3: want nil, got %v", err3)
 	}
 	if read3 != nil {
-		t.Errorf("read3: want % X got % X", nil, read3)
+		t.Errorf("read3: want nil got % X", read3)
 	}
 	if hasNext3 {
 		t.Errorf("hasNext3: want false got true")
@@ -135,7 +135,7 @@ func TestReadThreeChunks(t *testing.T) {
 		t.Errorf("err4: want nil, got %v", err4)
 	}
 	if read4 != nil {
-		t.Errorf("read4: want % X got % X", nil, read4)
+		t.Errorf("read4: want nil got % X", read4)
 	}
 	if hasNext4 {
 		t.Errorf("hasNext4: want false got true")
