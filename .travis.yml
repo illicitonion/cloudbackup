@@ -7,4 +7,4 @@ script:
   - BAD_FILES=$(gofmt -l .) && [[ -z "${BAD_FILES}" ]] || (echo >&2 "Badly formatted files:" && echo "${BAD_FILES}" && exit 1)
   - go build
   - go test ./...
-  - go tool vet .
+  - go tool vet -composites=false .
