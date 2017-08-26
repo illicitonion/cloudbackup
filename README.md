@@ -1,4 +1,4 @@
-# cloudbackup
+# cloudbackup [![Build Status](https://travis-ci.org/illicitonion/cloudbackup.svg?branch=master)](https://travis-ci.org/illicitonion/cloudbackup)
 
 cloudbackup encrypts files and stores them to cloud storage.
 
