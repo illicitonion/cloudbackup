@@ -9,8 +9,7 @@ import (
 )
 
 type ChunkStore struct {
-	Bucket                   *storage.BucketHandle
-	OptimizeForRepeatedSaves bool
+	Bucket *storage.BucketHandle
 }
 
 func (b *ChunkStore) Read(hmac string) ([]byte, error) {
@@ -31,11 +30,6 @@ func (b *ChunkStore) Read(hmac string) ([]byte, error) {
 
 func (b *ChunkStore) Save(hmac string, contents []byte) error {
 	object := b.Bucket.Object(hmac)
-	if b.OptimizeForRepeatedSaves {
-		object = object.If(storage.Conditions{
-			DoesNotExist: true,
-		})
-	}
 	writer := object.NewWriter(context.Background())
 	_, err := writer.Write(contents)
 	if err != nil {

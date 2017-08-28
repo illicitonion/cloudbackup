@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/aes"
+	"crypto/hmac"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/pem"
@@ -48,6 +49,7 @@ func main() {
 	os.Args = append([]string{os.Args[0] + " " + os.Args[1]}, os.Args[2:]...)
 
 	var metaFileFlag, chunkSpec, file, excludeNamesFlag *string
+	var reupload *bool
 	var chunkBytes *int
 	if command != "keygen" {
 		chunkSpec = flag.String("chunkspec", "", "Spec of where to save chunks. Valid values: local:/path/to/local/directory, gcs:path-to-json-keyfile:bucket-name")
@@ -57,6 +59,7 @@ func main() {
 		if command == "encrypt" {
 			chunkBytes = flag.Int("chunk-bytes", -1, "The number of bytes to store in each encrypted chunk. Smaller files (or trailing chunks) will be padded such that all chunks are an identical size. This padding will be stripped on decryption. This must be at least as large as a single meta.Entry (which is about 256 bytes).")
 			excludeNamesFlag = flag.String("exclude-names", "", "File or directory names to ignore; semicolon-delimited.")
+			reupload = flag.Bool("reupload", false, "Whether to re-upload chunks which have not changed in already uploaded files.")
 		}
 	}
 
@@ -112,8 +115,8 @@ func main() {
 
 	switch command {
 	case "encrypt":
-		if *chunkBytes <= 0 {
-			fatal(fmt.Sprintf("Need chunk-bytes greater than zero, got %v", *chunkBytes), true)
+		if *chunkBytes <= 0 || *chunkBytes%aes.BlockSize != 0 {
+			fatal(fmt.Sprintf("Need -chunk-bytes greater than zero, and a multiple of %v got %v", aes.BlockSize, *chunkBytes), true)
 		}
 		fi, err := os.Stat(*file)
 		if err != nil {
@@ -137,7 +140,7 @@ func main() {
 				}
 			}
 			if !fi.IsDir() {
-				encryptFileAndStoreMetadata(aesKey, hmacKey, chunkStore, *chunkBytes, db, file, fi)
+				encryptFileAndStoreMetadata(aesKey, hmacKey, chunkStore, *chunkBytes, db, file, fi, *reupload)
 			}
 			return nil
 		}
@@ -233,10 +236,7 @@ func parseChunkSpec(chunkSpec string, keys map[string][]byte) (chunkStoreInterfa
 		if err != nil {
 			return nil, err
 		}
-		return &gcs.ChunkStore{
-			Bucket: client.Bucket(parts[2]),
-			OptimizeForRepeatedSaves: false,
-		}, nil
+		return &gcs.ChunkStore{Bucket: client.Bucket(parts[2])}, nil
 	default:
 		return nil, fmt.Errorf("didn't know how to make ChunkSpec for scheme %s", parts[0])
 	}
@@ -299,7 +299,10 @@ func uploadMetadataFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, 
 		log.Fatalf("Error gzipping boltdb file: %v", err)
 	}
 	zippedBytes := int64(zipped.Len())
-	chunks := encryptFile(aesKey, hmacKey, chunkStore, chunkBytes, "boltdbmeta", zipped, zippedBytes)
+	chunks, err := encryptFile(aesKey, hmacKey, makeIV, nil, chunkStore, chunkBytes, "boltdbmeta", zipped, zippedBytes, true)
+	if err != nil {
+		log.Fatal(err)
+	}
 	entry := meta.Entry{
 		zippedBytes,
 		chunks,
@@ -317,14 +320,17 @@ func uploadMetadataFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, 
 	}
 }
 
-func encryptFileAndStoreMetadata(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, chunkBytes int, db *meta.DB, file string, fi os.FileInfo) {
+func encryptFileAndStoreMetadata(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, chunkBytes int, db *meta.DB, file string, fi os.FileInfo, uploadIfUnchanged bool) {
 	f, err := os.Open(file)
 	if err != nil {
 		log.Fatal("Error opening file for encryption: ", err)
 	}
 	defer f.Close()
 
-	chunks := encryptFile(aesKey, hmacKey, chunkStore, chunkBytes, fi.Name(), f, fi.Size())
+	chunks, err := encryptFile(aesKey, hmacKey, makeIV, db, chunkStore, chunkBytes, fi.Name(), f, fi.Size(), uploadIfUnchanged)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	entry, err := makeEntry(fi, chunks)
 	if err != nil {
@@ -374,38 +380,75 @@ func makeEntry(fi os.FileInfo, chunks []meta.Chunk) (*meta.Entry, error) {
 	}, nil
 }
 
-func encryptFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, chunkBytes int, name string, f io.Reader, fileSize int64) []meta.Chunk {
+type ivFunc func() ([]byte, error)
+
+func makeIV() (iv []byte, err error) {
+	iv = make([]byte, aes.BlockSize)
+	if _, err = rand.Read(iv); err != nil {
+		return nil, err
+	}
+	return iv, nil
+}
+
+// db may be nil if uploadIfUnchanged is true.
+func encryptFile(aesKey, hmacKey []byte, makeIV ivFunc, db *meta.DB, chunkStore chunkStoreInterface, chunkBytes int, name string, f io.Reader, fileSize int64, uploadIfUnchanged bool) ([]meta.Chunk, error) {
 	nextChunk := files.ReadChunks(name, f, chunkBytes, fileSize)
 
 	var chunks []meta.Chunk
 
-	for {
+	var oldChunks []meta.Chunk
+	if !uploadIfUnchanged {
+		oldChunks = getKnownChunks(name, db)
+	}
+
+	for i := 0; true; i++ {
 		plaintext, _, err := nextChunk()
 		if err != nil {
-			log.Fatal("Error reading file for encryption: ", err)
+			return nil, fmt.Errorf("reading file for encryption: %v", err)
 		}
 		if plaintext == nil {
 			break
 		}
 
-		iv := make([]byte, aes.BlockSize)
-		if _, err := rand.Read(iv); err != nil {
-			log.Fatal("Error reading random value for IV:", err)
+		if !uploadIfUnchanged && i < len(oldChunks) {
+			iv := oldChunks[i].IV
+			_, ciphertextMAC, err := crypto.Encrypt(aesKey, hmacKey, iv, plaintext, chunkBytes)
+			if err == nil && hmac.Equal(ciphertextMAC, oldChunks[i].CiphertextMAC) {
+				chunks = append(chunks, oldChunks[i])
+				continue
+			}
+		}
+
+		iv, err := makeIV()
+		if err != nil {
+			return nil, fmt.Errorf("making IV: %v", err)
 		}
 
 		ciphertext, ciphertextMAC, err := crypto.Encrypt(aesKey, hmacKey, iv, plaintext, chunkBytes)
 		if err != nil {
-			log.Fatal("Error encrypting file: ", err)
+			return nil, fmt.Errorf("encrypting file: %v", err)
 		}
 		ciphertextMACString := hex.EncodeToString(ciphertextMAC)
 
 		if err := chunkStore.Save(ciphertextMACString, ciphertext); err != nil {
-			log.Fatal("Error saving encrypted file: ", err)
+			return nil, fmt.Errorf("saving encrypted file: %v", err)
 		}
 
 		chunks = append(chunks, meta.Chunk{iv, ciphertextMAC})
 	}
-	return chunks
+	return chunks, nil
+}
+
+func getKnownChunks(name string, db *meta.DB) []meta.Chunk {
+	entries, err := db.Get(name)
+	if err != nil {
+		return nil
+	}
+	entry, ok := entries[name]
+	if !ok {
+		return nil
+	}
+	return entry.Chunks
 }
 
 func decryptFile(aesKey, hmacKey []byte, chunkStore chunkStoreInterface, e *meta.Entry, tempDir, file string) {
